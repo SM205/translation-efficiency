@@ -1,0 +1,202 @@
+---
+title: "R Notebook"
+output:
+  html_notebook:
+    theme: united
+    toc: yes
+    code_folding: hide
+---
+
+The goal is to use bayesian regression to estimate codon specific elongation speeds. Gamma prior is chosen as default, since it was found to be the best prior in a previous analysis. Consensus ES is used to estimate the codon specific elongation speeds, and there is also a focus on two different CDS bins of interest, namely, 400-800 and 800-1200 bp.
+
+# Loading files and libraries
+
+```{r}
+library(tidyverse)
+library(brms)
+library(cmdstanr)
+library(ggpubr)
+```
+
+```{r}
+codon_count <- readxl::read_excel("data_files/Codon_counts.xlsx")[c(1:6600),] %>% column_to_rownames("...1")
+
+codon_freq <- codon_count %>% 
+  mutate(across(where(is.numeric))/rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Gene")
+
+TE <- readxl::read_excel("Unification_wo_normalisation_TE.xlsx")
+```
+
+# Pre-regression analysis
+
+**Keeping only the 61 sense codons**
+
+```{r}
+codon_freq <- codon_freq %>% select(-c(TAG,TGA,TAA))
+```
+
+```{r}
+TE <- TE %>% drop_na(Consensus_TE_speed_aa_sec) %>%
+  mutate(CDS_bins_400 = cut(CDSLength,breaks=c(min(CDSLength),
+                                               400,
+                                               800,
+                                               1200,
+                                               1800,
+                                               max(CDSLength)),
+                            include.lowest = TRUE))
+```
+
+## bin II: 400-800 bp
+
+bin number based on original division of genes in CDS bins
+
+```{r}
+T_II <- TE %>% 
+  filter(CDS_bins_400 == "(400,800]") %>% 
+  select(SystematicName,Consensus_TE_speed_aa_sec)
+T_II <- merge(T_II,codon_freq, by.x = "SystematicName", by.y= "Gene")
+T_II <- T_II %>% column_to_rownames("SystematicName")
+```
+
+## bin III: 800-1200 bp
+
+bin number based on original division of genes in CDS bins
+
+```{r}
+T_III <- TE %>% 
+  filter(CDS_bins_400 == "(800,1.2e+03]") %>% 
+  select(SystematicName,Consensus_TE_speed_aa_sec)
+T_III <- merge(T_III,codon_freq, by.x = "SystematicName", by.y= "Gene")
+T_III <- T_III %>% column_to_rownames("SystematicName")
+```
+
+# Bayesian regression
+
+Stictly positive and continuous as justification for family gamma term
+
+Strictly positive values as well as constraints added to the output (so that it is not full of v. high or v. low values) as justification for prior gamma term
+
+## Parameters
+
+Change number of threads as necessary
+
+```{r}
+positive_prior <- prior(gamma(2, 1), class = "b", lb=0)
+num_threads <- threading(7)
+```
+
+## bin II: 400-800 bp
+
+```{r}
+brms_model_II <- brm(bf(Consensus_TE_speed_aa_sec ~ .),
+  data = T_II,
+  family = Gamma(link = "log"),
+  prior = positive_prior,
+  backend = "cmdstanr",
+  threads = num_threads,
+  chains = 4,
+  iter = 4000)
+```
+
+```{r}
+codon_speed_II <- summary(brms_model_II)
+codon_speed_II <- codon_speed_II$fixed %>% 
+  select(Estimate,Est.Error,`l-95% CI`,`u-95% CI`) %>% 
+  rownames_to_column("Codon") %>%
+  filter(Codon != "Intercept")
+```
+
+```{r}
+gghistogram(data = codon_speed_II, x = "Estimate",
+            fill = "lightgrey", add = "mean",
+            y = "density",
+            add_density = TRUE,
+            title = "Histogram of codon level speeds",
+            xlab = "Codon specific elongation speed (1/s)", 
+            ylab = "Number of codons",
+            rug = TRUE)
+```
+
+```{r}
+median(codon_speed_II$Estimate)
+```
+
+## bin III: 800-1200 bp
+
+```{r}
+brms_model_III <- brm(bf(Consensus_TE_speed_aa_sec ~ .),
+  data = T_III,
+  family = Gamma(link = "log"),
+  prior = positive_prior,
+  backend = "cmdstanr",
+  threads = num_threads,
+  chains = 4,
+  iter = 4000)
+```
+
+```{r}
+codon_speed_III <- summary(brms_model_III)
+codon_speed_III <- codon_speed_III$fixed %>% 
+  select(Estimate,Est.Error,`l-95% CI`,`u-95% CI`) %>% 
+  rownames_to_column("Codon") %>%
+  filter(Codon != "Intercept")
+```
+
+```{r}
+codon_speed_III <- summary(brms_model_III)
+codon_speed_III <- codon_speed_III$fixed %>% 
+  select(Estimate,Est.Error,`l-95% CI`,`u-95% CI`) %>% 
+  rownames_to_column("Codon") %>%
+  filter(Codon != "Intercept")
+```
+
+```{r}
+gghistogram(data = codon_speed_III, x = "Estimate",
+            fill = "lightgrey", add = "mean",
+            add_density = TRUE, #bins = 50,
+            title = "Histogram of codon level speeds",
+            xlab = "Codon specific elongation speed (1/s)", 
+            ylab = "Number of codons",
+            rug = TRUE)
+```
+
+```{r}
+median(codon_speed_III$Estimate)
+```
+
+## Scatter plot bin II vs bin III
+
+```{r}
+codon_speed_comp <- merge(codon_speed_II,
+                          codon_speed_III,
+                          by = "Codon", 
+                          suffixes = c("_II","_III"))
+```
+
+```{r}
+writexl::write_xlsx(codon_speed_comp,"Codon_Speed.xlsx")
+```
+
+```{r}
+ggplot(data = codon_speed_comp, aes(x=Estimate_II, y=Estimate_III)) +
+  geom_point()  +
+  geom_smooth(method='lm') +
+  labs(x = expression(atop("Elongation speed ("*s^-1*")",paste("400-800 nt"))),
+       y = expression(atop("Elongation speed ("*s^-1*")",paste("800-1200 nt")))) +
+  theme(legend.position = "right",
+              legend.title = element_text(size=16,hjust = 0.5),
+              legend.background = element_rect(colour="black"),
+              legend.text = element_text(size=16),
+              axis.text.x = element_text(size = 18, angle = 0),
+              axis.text.y = element_text(size = 18),
+              axis.title.x = element_text(size = 18),   
+              axis.title.y = element_text(size = 18), 
+              panel.background = element_blank(),
+              panel.grid = element_blank(),
+              axis.line = element_line(colour = "black")) +
+  annotate(geom = "text", 
+           x = 2.5, y = 14, 
+           label = "Codon-specific",
+           size = 8)
+```
