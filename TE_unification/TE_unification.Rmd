@@ -318,6 +318,8 @@ colnames(reunified_TE)[colnames(reunified_TE) == 't1/2 [unified, rescaled to MGC
 colnames(reunified_TE)[colnames(reunified_TE) == 'UCSF (All/MAD)'] <- 'UCSF'
 ```
 
+# Elongation speeds in kb hr^-1^ 
+
 ```{r}
 reunified_TE <- reunified_TE %>%
   arrange(CDSLength) %>%
@@ -327,6 +329,18 @@ reunified_TE <- reunified_TE %>%
          riba_RiboZero_speed = (TE_riba_RiboZero*CDSLength)/(1000*MeanNumberOfRibosomes),
          Consensus_TE_speed = (unified_TE_geomean*CDSLength)/(1000*MeanNumberOfRibosomes),
          Density = (MeanNumberOfRibosomes*1000)/CDSLength)
+```
+
+# Elongation speeds in aa s^-1^ 
+
+```{r}
+reunified_TE <- reunified_TE %>%
+  arrange(CDSLength) %>%
+  mutate(lahtvee_speed_aa_sec = lahtvee_speed/(3.6*3),
+         yu_speed_aa_sec = yu_speed/(3.6*3),
+         riba_speed_aa_sec = riba_speed/(3.6*3),
+         riba_RiboZero_speed_aa_sec = riba_RiboZero_speed/(3.6*3),
+         Consensus_TE_speed_aa_sec = Consensus_TE_speed/(3.6*3),
 ```
 
 ```{r}
