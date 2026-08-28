@@ -1,0 +1,366 @@
+---
+title: "R Notebook"
+output:
+  html_notebook:
+    theme: united
+    toc: yes
+    code_folding: hide
+---
+
+```{r}
+library(tidyverse)
+library(zoo)
+```
+
+# Loading files
+
+Additional details related to the genes helpful for further analysis with TE
+
+Obtained from PMID: [37756413](https://pubmed.ncbi.nlm.nih.gov/37756413/)
+
+```{r}
+supplemental_2 <- readxl::read_excel("data_files/PolyProp_from_sciAdv_2023.xlsx")
+supplemental_1 <- readxl::read_excel("data_files/muCSC_from_sciAdv_2023.xlsx")
+# recalculation of µCSC values based on CSC values in PMID: 37756413 and half life values from unified t1/2
+muCSC <- readxl::read_excel("data_files/Genes_with_recalculated_muCSC.xlsx")
+# Selecting columns in common with Supplemental 2
+supplemental_1 <- supplemental_1 %>% 
+  select(Gene,muCSC, `t1/2 [unified, rescaled to MGC/Glc.] (min)`,`UCSF (All/MAD)`) %>%
+  rename(SystematicName = Gene)
+
+supplemental_2 <- full_join(supplemental_1,supplemental_2)
+supplemental_2$muCSC <- muCSC[match(supplemental_2$SystematicName, muCSC$Gene),]$muCSC
+supplemental_2$CDSLength <- muCSC[match(supplemental_2$SystematicName, muCSC$Gene),]$CDSLength
+```
+
+Required for TE Lahtvee and TE Yu
+
+```{r}
+protein_name <- readxl::read_excel("data_files/uniprotkb_proteome_UP000002311_2024_06_07.xlsx")
+protein_name <- protein_name[c(1,5,6,8)]
+colnames(protein_name) <- c("Protein","ProteinLength","Gene","Name")
+```
+
+```{r}
+TE_Lahtvee <- readxl::read_excel("data_files/TE_Lahtvee.xlsx",skip = 2)
+TE_Lahtvee <- TE_Lahtvee %>% drop_na()
+TE_Lahtvee <- merge(TE_Lahtvee,protein_name,all.x = TRUE,by.x = "Protein ID",by.y = "Protein")
+TE_Lahtvee <- TE_Lahtvee[c(2,4)]
+colnames(TE_Lahtvee) <- c("TE_lahtvee","SystematicName")
+```
+
+```{r}
+Yu_quantification <- readxl::read_excel("data_files/41467_2020_15749_MOESM4_ESM.xlsx",skip = 1)
+Yu_efficiency <- readxl::read_excel("data_files/41467_2020_15749_MOESM13_ESM.xlsx",skip = 1)
+Yu <- merge(Yu_quantification[c(1,2)],Yu_efficiency)
+Yu <- Yu[c(2,3)]
+colnames(Yu) <- c("Protein","TE_yu")
+Yu <- merge(protein_name,Yu,all.y = TRUE)
+TE_yu <- Yu[c(3,5)]
+colnames(TE_yu) <- c("SystematicName","TE_yu")
+```
+
+```{r}
+TE_riba_polyA <- read.table("data_files/pnas.1817299116.sd01.tsv", header = TRUE, sep='\t') 
+TE_riba_polyA <- TE_riba_polyA[c(2,12)] 
+colnames(TE_riba_polyA) <- c("SystematicName","TE_riba")
+```
+
+```{r}
+TE_riba_ribozero <- read.table("data_files/pnas.1817299116.sd02.tsv", header = TRUE, sep='\t') 
+TE_riba_ribozero <- TE_riba_ribozero[c(2,11)] 
+colnames(TE_riba_ribozero) <- c("SystematicName","TE_riba_RiboZero")
+```
+
+```{r}
+combined_TE_supp <- Reduce(function(...) merge(..., all.x=TRUE), list(supplemental_2,TE_Lahtvee,TE_yu,TE_riba_polyA,TE_riba_ribozero))
+```
+
+# Bringing TE Riba to Protein mRNA^-1^ hr^-1^
+
+Original units were Protein mRNA^-1^ s^-1^
+
+This is the only dataset with different units, since Lahtvee and Yu both have the units of Protein mRNA^-1^ hr^-1^
+
+```{r}
+combined_TE_supp$TE_riba_per_sec <- combined_TE_supp$TE_riba
+combined_TE_supp$TE_riba_RiboZero_per_sec <- combined_TE_supp$TE_riba_RiboZero
+combined_TE_supp$TE_riba <- combined_TE_supp$TE_riba_per_sec*3600
+combined_TE_supp$TE_riba_RiboZero <- combined_TE_supp$TE_riba_RiboZero_per_sec*3600
+```
+
+# TE unification
+
+The criteria of consensus (GM based on multiple if the difference between TE \< 10 x) is applied but genes with a single measurement are accepted as is but only for the genes in 95 percentile TE range of genes containing a single TE value
+
+```{r}
+unification <- combined_TE_supp[c(1,40:42)]
+lahtvee_range <- quantile(unification$TE_lahtvee,
+         probs = c(0.025,0.975), na.rm = TRUE)
+yu_range <- quantile(unification$TE_yu,
+         probs = c(0.025,0.975), na.rm = TRUE)
+riba_range <- quantile(unification$TE_riba,
+         probs = c(0.025,0.975), na.rm = TRUE)
+```
+
+```{r}
+unification$num_TE <- rowSums(!is.na(unification[2:4]))
+min_max_difference <- function(row){
+  if(all(is.na(row))) {
+    return(NA)
+  } else{
+    return(max(row, na.rm = TRUE)/min(row, na.rm = TRUE))
+  }
+}
+unification$max_by_min <-apply(unification[2:4],1,min_max_difference)
+unification$unified_TE_geomean <- NA
+unification$TE_remarks <- NA
+unification$second_by_third <- NA
+unification$first_by_second <- NA
+gm <- function(x, na.rm=TRUE){
+  exp(mean(log(x[x > 0]), na.rm=na.rm))
+}
+unification[unification$num_TE == 0,]$TE_remarks <- "No TE value available" 
+unification[(unification$num_TE == 2) & (unification$max_by_min > 10),]$TE_remarks <- "Dropped: TE values >10x apart"
+unification[(unification$num_TE >= 2) & (unification$max_by_min <= 10),]$unified_TE_geomean <-
+  apply(unification[(unification$num_TE >= 2) & (unification$max_by_min <= 10),][2:4],1,gm)
+unification[(unification$num_TE >= 2) & (unification$max_by_min <= 10),]$TE_remarks <- "GM calculated with available values"
+```
+
+Need to calculate 95 percentile of TE with single genes
+
+```{r}
+# Explanation: 
+# First, the gene needs to be present in only one dataset
+# Second, the gene needs to be within the 95 percentile range of whichever dataset its TE value is found in
+
+# TE values
+# Lahtvee
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_lahtvee) &
+              unification$TE_lahtvee >= lahtvee_range[1] &
+              unification$TE_lahtvee <= lahtvee_range[2],]$
+  unified_TE_geomean <- 
+  unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_lahtvee) &
+              unification$TE_lahtvee >= lahtvee_range[1] &
+              unification$TE_lahtvee <= lahtvee_range[2],]$
+  TE_lahtvee
+
+# Yu
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_yu) &
+              unification$TE_yu >= yu_range[1] &
+              unification$TE_yu <= yu_range[2],]$
+  unified_TE_geomean <- 
+  unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_yu) &
+              unification$TE_yu >= yu_range[1] &
+              unification$TE_yu <= yu_range[2],]$
+  TE_yu
+
+# Riba
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_riba) &
+              unification$TE_riba >= riba_range[1] &
+              unification$TE_riba <= riba_range[2],]$
+  unified_TE_geomean <- 
+  unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_riba) &
+              unification$TE_riba >= riba_range[1] &
+              unification$TE_riba <= riba_range[2],]$
+  TE_riba
+
+# TE related remarks
+# Lahtvee
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_lahtvee) &
+              unification$TE_lahtvee >= lahtvee_range[1] &
+              unification$TE_lahtvee <= lahtvee_range[2],]$
+  TE_remarks <- 
+  "Unified value from Lahtvee"
+
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_lahtvee) &
+              unification$TE_lahtvee < lahtvee_range[1],]$
+  TE_remarks <- 
+  "Dropped: < 2.5 percentile Lahtvee TE"
+
+# No such genes exist, so, the following was showing an error
+#unification[unification$num_TE == 1 & 
+#              !is.na(unification$TE_lahtvee) &
+#              unification$TE_lahtvee > lahtvee_range[2],]$
+#  TE_remarks <- 
+#  "Dropped: > 97.5 percentile Lahtvee TE"
+
+# Yu
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_yu) &
+              unification$TE_yu >= yu_range[1] &
+              unification$TE_yu <= yu_range[2],]$
+    TE_remarks <- 
+  "Unified value from Yu"
+
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_yu) &
+              unification$TE_yu < yu_range[1],]$
+    TE_remarks <- 
+  "Dropped: < 2.5 percentile Yu TE"
+
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_yu) &
+              unification$TE_yu > yu_range[2],]$
+    TE_remarks <- 
+  "Dropped: > 97.5 percentile Yu TE"
+
+# Riba
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_riba) &
+              unification$TE_riba >= riba_range[1] &
+              unification$TE_riba <= riba_range[2],]$
+  TE_remarks <-
+  "Unified value from Riba"
+
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_riba) &
+              unification$TE_riba < riba_range[1],]$
+  TE_remarks <-
+  "Dropped: < 2.5 percentile Riba TE"
+
+unification[unification$num_TE == 1 & 
+              !is.na(unification$TE_riba) &
+              unification$TE_riba > riba_range[2],]$
+  TE_remarks <-
+  "Dropped: > 97.5 percentile Riba TE"
+```
+
+```{r}
+# first, second and third are in descending order
+first_by_second <- function(row){
+  return(sort(row,decreasing = TRUE)[1]/sort(row,decreasing = TRUE)[2])
+}
+second_by_third <- function(row){
+  return(sort(row,decreasing = TRUE)[2]/sort(row,decreasing = TRUE)[3])
+}
+
+unification[(unification$num_TE == 3),]$first_by_second <- apply(unification[(unification$num_TE == 3),][2:4],1,first_by_second)
+unification[(unification$num_TE == 3),]$second_by_third <- apply(unification[(unification$num_TE == 3),][2:4],1,second_by_third)
+
+# required to calculate the gm at the end when we remove either the highest or the lowest
+unification$first <- NA
+unification$second <- NA
+unification$third <- NA
+
+first_ <- function(row){
+  return(sort(sort(row,decreasing = TRUE)[1]))
+}
+second_ <- function(row){
+  return(sort(sort(row,decreasing = TRUE)[2]))
+}
+third_ <- function(row){
+  return(sort(sort(row,decreasing = TRUE)[3]))
+}
+
+unification[(unification$num_TE == 3),]$first <- apply(unification[(unification$num_TE == 3),][2:4],1,first_)
+unification[(unification$num_TE == 3),]$second <- apply(unification[(unification$num_TE == 3),][2:4],1,second_)
+unification[(unification$num_TE == 3),]$third <- apply(unification[(unification$num_TE == 3),][2:4],1,third_)
+```
+
+```{r}
+unification <- unification %>%
+  mutate(
+    three_valued = if_else(
+      (num_TE != 3 | max_by_min <= 10),
+      NA,
+      case_when(
+        (first_by_second > 10 & second_by_third > 10) ~ "drop gene",
+        (first_by_second <= 10 & second_by_third > 10) ~ "drop lowest",
+        (first_by_second > 10 & second_by_third <= 10) ~ "drop highest",
+        (first_by_second <= 10 & second_by_third <= 10) ~ case_when(first_by_second > second_by_third ~ "drop highest", second_by_third > first_by_second ~ "drop lowest", first_by_second == second_by_third ~ "drop gene")
+        )
+      )
+    )
+```
+
+```{r}
+unification <- unification %>%
+  mutate(TE_remarks = replace(TE_remarks,three_valued == "drop gene","Dropped: Three TEs >10x apart and no consensus on removal of one"),
+         TE_remarks = replace(TE_remarks,three_valued == "drop highest","GM calculated after removing the highest TE"),
+         TE_remarks = replace(TE_remarks,three_valued == "drop lowest","GM calculated after removing the lowest TE")
+  )
+```
+
+```{r}
+unification <- unification %>%
+  rowwise() %>%
+  mutate(unified_TE_geomean = replace(unified_TE_geomean,three_valued == "drop lowest",gm(c(first,second))),
+         unified_TE_geomean = replace(unified_TE_geomean,three_valued == "drop highest",gm(c(second,third)))
+  )
+```
+
+```{r}
+to_merge <- unification[,c(1,5,7,8)]
+merged_TE <- merge(combined_TE_supp,to_merge)
+```
+
+```{r}
+reunified_TE <- merged_TE %>% select(SystematicName,
+                        muCSC,
+                        `t1/2 [unified, rescaled to MGC/Glc.] (min)`,
+                        `UCSF (All/MAD)`,
+                        Gene,
+                        PolysomePropensity,
+                        MonosomeToPolysome,
+                        MeanNumberOfRibosomes,
+                        CDSLength,
+                        TE_lahtvee:TE_remarks)
+colnames(reunified_TE)[colnames(reunified_TE) == 't1/2 [unified, rescaled to MGC/Glc.] (min)'] <- 'thalf'
+colnames(reunified_TE)[colnames(reunified_TE) == 'UCSF (All/MAD)'] <- 'UCSF'
+```
+
+```{r}
+reunified_TE <- reunified_TE %>%
+  arrange(CDSLength) %>%
+  mutate(lahtvee_speed = (TE_lahtvee*CDSLength)/(1000*MeanNumberOfRibosomes),
+         yu_speed = (TE_yu*CDSLength)/(1000*MeanNumberOfRibosomes),
+         riba_speed = (TE_riba*CDSLength)/(1000*MeanNumberOfRibosomes),
+         riba_RiboZero_speed = (TE_riba_RiboZero*CDSLength)/(1000*MeanNumberOfRibosomes),
+         Consensus_TE_speed = (unified_TE_geomean*CDSLength)/(1000*MeanNumberOfRibosomes),
+         Density = (MeanNumberOfRibosomes*1000)/CDSLength)
+```
+
+```{r}
+reunified_TE <- reunified_TE %>% mutate(Reliability = case_when(
+  TE_remarks == "GM calculated with available values" ~ num_TE,
+  str_detect(TE_remarks,"^Dropped:") ~ 0,
+  str_detect(TE_remarks,"^No TE") ~0,
+  str_detect(TE_remarks,"^Unified") ~1,
+  TRUE ~ 2
+))
+```
+
+```{r}
+colnames(reunified_TE)[colnames(reunified_TE) == 'unified_TE_geomean'] <- 'consensus_TE_geomean'
+```
+
+# Addition of CV to genes with NumTE ≥ 2
+
+```{r}
+numTE_2plus <- reunified_TE[reunified_TE$num_TE >= 2,]
+
+cv <- numTE_2plus %>%
+  arrange(CDSLength) %>%
+  rowwise() %>%
+  mutate(CV = sd(c(TE_lahtvee,TE_yu,TE_riba),na.rm = TRUE)/mean(c(TE_lahtvee,TE_yu,TE_riba),na.rm = TRUE)) %>%
+  ungroup()
+```
+
+```{r}
+reunified_TE <- merge(reunified_TE,cv,all.x = TRUE)
+```
+
+# Output File
+
+```{r}
+writexl::write_xlsx(reunified_TE,"Unification_wo_normalisation_TE.xlsx")
+```
