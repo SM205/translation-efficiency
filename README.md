@@ -27,7 +27,6 @@ R packages:
 - brms
 - cmdstanr
 - ggpubr
-- org.Hs.eg.db (GO)
 
 # Prerequisites
 
