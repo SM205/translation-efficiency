@@ -1,0 +1,540 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Files and libraries
+
+```{r}
+library(tidyverse)
+library(tictoc)
+library(statpsych)
+```
+
+```{r}
+# TE df with fractional occupancy; has a few hundred fewer genes than the other TE df
+TE <- readxl::read_excel("/Users/samuelmondal/Documents/Translation/TE_readjustment/Total_unified_extrapolation/Total_unified_TE_extrapolation.xlsx")
+#TE <- readxl::read_excel("/Users/samuelmondal/Documents/Translation/TE_readjustment/Total_unified_extrapolation/Total_unified_TE_extrapolation_alternate.xlsx")
+gtAI <- readxl::read_excel("/Users/samuelmondal/Documents/Translation/TE_readjustment/gtAI/Table 4.XLSX",sheet = "Saccharomyces cerevisiae")
+refseq_name <- read.delim(file = "/Users/samuelmondal/Documents/Translation/TE_readjustment/gtAI/uniprotkb_saccharomyces_cerevisiae_AND_2025_04_03.tsv", sep = "\t")
+splt <- separate(gtAI, col = `gene id`, into = paste0("V", 1:6),
+         sep = "_", fill = "right", remove = FALSE)$V5
+gtAI$RefSeq <- paste0("NP_",splt)
+refseq_name <- refseq_name %>% drop_na(RefSeq)
+refseq_name$RefSeq <- vapply(strsplit(refseq_name$RefSeq,"[;& ]+"), `[`, 1, FUN.VALUE=character(1))
+refseq_name <- refseq_name %>% rename(SystematicName = Gene.Names..ordered.locus.,Gene = Gene.Names..primary.) %>% select(SystematicName,Gene,RefSeq)
+gtAI <- merge(refseq_name,gtAI)
+gtAI <- gtAI %>% select(SystematicName,tAI)
+TE <- merge(gtAI,TE)
+```
+
+```{r}
+Riba <- readxl::read_excel("/Users/samuelmondal/Documents/Translation/TE_readjustment/Total_unified_extrapolation/Riba_TE_extrapolation.xlsx")
+Riba <- merge(gtAI,Riba)
+```
+
+```{r}
+plot_theme <-theme(legend.position = "right",
+              legend.title = element_text(size=16,hjust = 0.5),
+              legend.background = element_rect(colour="black"),
+              legend.text = element_text(size=16),
+              axis.text.x = element_text(size = 18, angle = 0),
+              axis.text.y = element_text(size = 18),
+              axis.title.x = element_text(size = 18),   
+              axis.title.y = element_text(size = 18), 
+              panel.background = element_blank(),
+              panel.grid = element_blank(),
+              axis.line = element_line(colour = "black"))
+
+col <- c("ES" = "green","TE" = "blue","thalf" = "red")
+colour_scale <- scale_colour_manual(name = "Control coefficient",
+                                 values = col,
+                                 labels = c("ES" = expression("Speed vs "*tAI), 
+                                            "TE" = expression("TE vs "*tAI),
+                                            "thalf" = expression(RNA~t[1/2]~vs~tAI)))
+
+fill_scale <- scale_fill_manual(name = "Control coefficient",
+                                 values = col,
+                                 labels = c("ES" = expression("Speed vs "*tAI), 
+                                            "TE" = expression("TE vs "*tAI),
+                                            "thalf" = expression(RNA~t[1/2]~vs~tAI)))
+```
+
+# Extrapolated total TE
+
+```{r}
+extrapolated_tot <- TE %>% drop_na(total_unified_TE,thalf,MeanNumberOfRibosomes) %>%
+  mutate(total_unified_ES = (total_unified_TE*CDSLength)/(1000*MeanNumberOfRibosomes)) %>%
+  arrange(CDSLength)
+```
+
+```{r}
+extrapolated_tot %>%
+  mutate(total_unified_ES = total_unified_ES/median(total_unified_ES),
+         total_unified_TE = total_unified_TE/median(total_unified_TE),
+         thalf = thalf/median(thalf)) %>%
+   summarise(num_genes = n(),
+            min_CDS = min(CDSLength),
+            max_CDS = max(CDSLength),
+            avg_CDS = mean(CDSLength),
+            {ES_tAI <- ci.theil(alpha = 0.05, total_unified_ES, tAI)
+            tibble(ES_tAI_slope = ES_tAI[1],
+                   ES_tAI_CI_low = ES_tAI[3],
+                   ES_tAI_CI_high = ES_tAI[4])},
+            {TE_tAI <- ci.theil(alpha = 0.05, total_unified_TE, tAI)
+            tibble(TE_tAI_slope = TE_tAI[1],
+                   TE_tAI_CI_low = TE_tAI[3],
+                   TE_tAI_CI_high = TE_tAI[4])},
+            {thalf_tAI <- ci.theil(alpha = 0.05, thalf, tAI)
+            tibble(thalf_tAI_slope = thalf_tAI[1],
+                   thalf_tAI_CI_low = thalf_tAI[3],
+                   thalf_tAI_CI_high = thalf_tAI[4])})
+```
+
+## UCSF selection III
+
+```{r}
+extrapolated_tot_III <- extrapolated_tot %>%
+  mutate(CDS_bins_400 = cut(CDSLength,breaks=c(min(CDSLength),
+                                               400,
+                                               800,
+                                               1200,
+                                               1800,
+                                               max(CDSLength)),
+                            include.lowest = TRUE))
+```
+
+```{r}
+extrapolated_tot_CDS_400_UCSF_III <- extrapolated_tot_III %>%
+  mutate(total_unified_ES = total_unified_ES/median(total_unified_ES),
+         total_unified_TE = total_unified_TE/median(total_unified_TE),
+         thalf = thalf/median(thalf)) %>%
+  group_by(CDS_bins_400) %>%
+  summarise(num_genes = n(),
+            min_CDS = min(CDSLength),
+            max_CDS = max(CDSLength),
+            avg_CDS = mean(CDSLength),
+            {ES_tAI <- ci.theil(alpha = 0.05, total_unified_ES, tAI)
+            tibble(ES_tAI_slope = ES_tAI[1],
+                   ES_tAI_CI_low = ES_tAI[3],
+                   ES_tAI_CI_high = ES_tAI[4])},
+            {TE_tAI <- ci.theil(alpha = 0.05, total_unified_TE, tAI)
+            tibble(TE_tAI_slope = TE_tAI[1],
+                   TE_tAI_CI_low = TE_tAI[3],
+                   TE_tAI_CI_high = TE_tAI[4])},
+            {thalf_tAI <- ci.theil(alpha = 0.05, thalf, tAI)
+            tibble(thalf_tAI_slope = thalf_tAI[1],
+                   thalf_tAI_CI_low = thalf_tAI[3],
+                   thalf_tAI_CI_high = thalf_tAI[4])})
+```
+
+# Fig 7B
+
+### Plots
+
+```{r}
+xscl <- scale_x_continuous(n.breaks = 8, limits = c(300,2900))
+yscl <- scale_y_continuous(n.breaks = 6, limits = c(-2,26))
+
+tot_400_III_p <- ggplot(data = extrapolated_tot_CDS_400_UCSF_III, aes(x=avg_CDS)) +
+  geom_point(aes(y=ES_tAI_slope,colour = "ES")) +
+  geom_line(aes(y=ES_tAI_slope,colour = "ES")) +
+  geom_ribbon(aes(ymin = ES_tAI_CI_low, ymax = ES_tAI_CI_high,fill = "ES"), 
+              alpha = 0.2) +
+  geom_point(aes(y=TE_tAI_slope,colour = "TE")) +
+  geom_line(aes(y=TE_tAI_slope,colour = "TE")) +
+  geom_ribbon(aes(ymin = TE_tAI_CI_low, ymax = TE_tAI_CI_high,fill = "TE"), 
+              alpha = 0.2) +
+  geom_point(aes(y=thalf_tAI_slope,colour = "thalf")) +
+  geom_line(aes(y=thalf_tAI_slope,colour = "thalf")) +
+  geom_ribbon(aes(ymin = thalf_tAI_CI_low, ymax = thalf_tAI_CI_high,fill = "thalf"), 
+              alpha = 0.2) +
+  colour_scale +
+  fill_scale +
+  labs(x = "CDS length (nt)", y = "Control coefficient",
+       title = "Regression based total unified TE UCSF selection III - CDS bins A") +
+  plot_theme
+```
+
+## Theil Sen vs OLS plots
+
+800-1200 bp bin for thalf and TE
+
+```{r}
+library(mblm)
+```
+
+```{r}
+equation_string <- function(lst) {
+  slope <- round(coef(lst)[2],2)
+  intercept <- round(coef(lst)[1],2)
+  sign <- ifelse(sign(intercept) == -1, "-", "+")
+  intercept <- intercept*sign(intercept)
+  string <- sprintf("y = %.2fx %s %.2f",slope,sign,intercept)
+  return(string)
+}
+```
+
+```{r}
+bin_of_interest <- extrapolated_tot_III %>% 
+  mutate(total_unified_ES = total_unified_ES/median(total_unified_ES),
+         total_unified_TE = total_unified_TE/median(total_unified_TE),
+         thalf = thalf/median(thalf)) %>%
+  filter(CDS_bins_400 == "(800,1.2e+03]")
+```
+
+```{r}
+OLS_line_TE <- lm(data = bin_of_interest, total_unified_TE~tAI)
+TS_line_TE <- mblm(dataframe = bin_of_interest, total_unified_TE~tAI, repeated = FALSE)
+OLS_line_thalf <- lm(data = bin_of_interest, thalf~tAI)
+TS_line_thalf <- mblm(dataframe = bin_of_interest, thalf~tAI, repeated = FALSE)
+```
+
+```{r}
+ggplot(data = bin_of_interest, aes(x=tAI, y=total_unified_TE)) +
+  geom_point() +
+  geom_abline(aes(intercept = coef(OLS_line_TE)[1],
+              slope = coef(OLS_line_TE)[2],
+              linetype="OLS"),     
+              linewidth = 1,
+              colour = "blue") +
+  geom_abline(aes(intercept = coef(TS_line_TE)[1],
+              slope = coef(TS_line_TE)[2],
+              linetype = "Theil-Sen"),     
+              linewidth = 1,
+              colour = "blue") +
+  scale_linetype_manual(values = c("Theil-Sen" = "solid", "OLS" = "dashed"),
+                        name = "Regression") +
+  labs(x = "tAI", y = "Norm. TE",
+       title = "Regression corrected unified TE CDS bin: (800,1200]") +
+  plot_theme +
+  scale_y_continuous(n.breaks = 6, limits = c(0,13.55)) +
+  scale_x_continuous(limits = c(0.32,0.6))
+```
+
+```{r}
+equation_string(OLS_line_TE)
+equation_string(TS_line_TE)
+```
+
+```{r}
+ggplot(data = bin_of_interest, aes(x=tAI, y=thalf)) +
+  geom_point() +
+  geom_abline(aes(intercept = coef(OLS_line_thalf)[1],
+              slope = coef(OLS_line_thalf)[2],
+              linetype="OLS"),     
+              linewidth = 1,
+              colour = "blue") +
+  geom_abline(aes(intercept = coef(TS_line_thalf)[1],
+              slope = coef(TS_line_thalf)[2],
+              linetype = "Theil-Sen"),     
+              linewidth = 1,
+              colour = "blue") +
+  scale_linetype_manual(values = c("Theil-Sen" = "solid", "OLS" = "dashed"),
+                        name = "Regression") +
+  labs(x = "tAI", y = expression("Norm. RNA "*t[1/2]),
+       title = "Regression corrected unified TE CDS bin: (800,1200];") +
+  plot_theme +
+  lims(y = c(0,4), x = c(0.32,0.6))
+```
+
+```{r}
+equation_string(OLS_line_thalf)
+equation_string(TS_line_thalf)
+```
+
+# Fig 7A
+
+```{r}
+# Two plots in one
+ggplot(data = bin_of_interest) +
+  geom_point(aes(x = tAI, y = total_unified_TE, colour = "TE"), alpha = 0.5) +
+  geom_point(aes(x = tAI, y = thalf, colour = "thalf"), alpha = 0.5) +
+  geom_abline(aes(intercept = coef(TS_line_TE)[1],
+                  slope = coef(TS_line_TE)[2],
+                  colour = "TE"),
+              linewidth = 1) +
+  geom_abline(aes(intercept = coef(TS_line_thalf)[1],
+                  slope = coef(TS_line_thalf)[2],
+                  colour = "thalf"),     
+              linewidth = 1) +
+  scale_x_continuous(n.breaks = 6, limits = c(0.32,0.6)) +      
+  scale_y_continuous(n.breaks = 6, limits = c(0,8)) +
+  labs(x = "tAI", y = expression(atop("TE (norm.)", paste("RNA  "*t[1/2]*" (norm.)"))),
+       title = "Regression corrected unified TE CDS bin: (800,1200]") +
+  scale_colour_manual(name = "Theil-Sen line", values = c("TE" = "blue", "thalf" = "red"),
+                      labels = c("TE", expression("RNA "*t[1/2]))) +
+  plot_theme
+```
+
+# Figdata 7A
+
+```{r}
+Fig7A <- extrapolated_tot_III %>% 
+  mutate(total_unified_ES_mdn_norm = total_unified_ES/median(total_unified_ES),
+         total_unified_TE_mdn_norm = total_unified_TE/median(total_unified_TE),
+         thalf_mdn_norm = thalf/median(thalf)) %>%
+  filter(CDS_bins_400 == "(800,1.2e+03]") %>%
+  select(SystematicName,Gene,tAI,thalf,thalf_mdn_norm,
+         total_unified_TE,total_unified_TE_mdn_norm)
+writexl::write_xlsx(Fig7A,"/Users/samuelmondal/Documents/Translation/Article/Complete submission/Fig Data/Fig 7A.xlsx")
+```
+
+```{r}
+ggplot(data = bin_of_interest) +
+  geom_point(aes(x = tAI, y = total_unified_TE), colour = "red") +
+  geom_point(aes(x = tAI, y = thalf), colour = "blue") +
+  geom_abline(aes(intercept = coef(TS_line_TE)[1],
+                  slope = coef(TS_line_TE)[2],
+                  linetype="TE"),
+              linewidth = 2) +
+  geom_abline(aes(intercept = coef(TS_line_thalf)[1],
+                  slope = coef(TS_line_thalf)[2],
+                  linetype = "thalf"),     
+              linewidth = 2) +
+  scale_x_continuous(n.breaks = 6, limits = c(0.32,0.6)) +      
+  scale_y_continuous(n.breaks = 6, limits = c(0,6)) +
+  labs(x = "tAI", y = "Norm. value",
+       title = "Regression corrected unified TE CDS bin: (800,1200]") +
+  scale_linetype_manual(values = c("TE" = "solid", "thalf" = "twodash"),
+                        labels = c("Norm. TE", expression("Norm. RNA "*t[1/2])),
+                        name = "Theil-Sen line") +
+  plot_theme
+```
+
+# Extrapolated Riba TE
+
+```{r}
+extrapolated_riba <- Riba %>% drop_na(total_Riba_TE,thalf,MeanNumberOfRibosomes) %>%
+  mutate(total_Riba_ES = (total_Riba_TE*CDSLength)/(1000*MeanNumberOfRibosomes)) %>%
+  arrange(CDSLength)
+```
+
+## UCSF selction III
+
+```{r}
+extrapolated_riba_III <- extrapolated_riba %>%
+  mutate(CDS_bins_400 = cut(CDSLength,breaks=c(min(CDSLength),
+                                               400,
+                                               800,
+                                               1200,
+                                               1800,
+                                               max(CDSLength)),
+                            include.lowest = TRUE))
+```
+
+```{r}
+extrapolated_riba_CDS_400_UCSF_III <- extrapolated_riba_III %>%
+  mutate(total_Riba_ES = total_Riba_ES/median(total_Riba_ES),
+         total_Riba_TE = total_Riba_TE/median(total_Riba_TE),
+         thalf = thalf/median(thalf)) %>%
+  group_by(CDS_bins_400) %>%
+  summarise(min_CDS = min(CDSLength),
+            max_CDS = max(CDSLength),
+            avg_CDS = mean(CDSLength),
+            {ES_tAI <- ci.theil(alpha = 0.05, total_Riba_ES, tAI)
+            tibble(ES_tAI_slope = ES_tAI[1],
+                   ES_tAI_CI_low = ES_tAI[3],
+                   ES_tAI_CI_high = ES_tAI[4])},
+            {TE_tAI <- ci.theil(alpha = 0.05, total_Riba_TE, tAI)
+            tibble(TE_tAI_slope = TE_tAI[1],
+                   TE_tAI_CI_low = TE_tAI[3],
+                   TE_tAI_CI_high = TE_tAI[4])},
+            {thalf_tAI <- ci.theil(alpha = 0.05, thalf, tAI)
+            tibble(thalf_tAI_slope = thalf_tAI[1],
+                   thalf_tAI_CI_low = thalf_tAI[3],
+                   thalf_tAI_CI_high = thalf_tAI[4])})
+```
+
+### Plots
+
+# Fig S6C
+
+```{r}
+xscl <- scale_x_continuous(n.breaks = 8, limits = c(300,2900))
+yscl <- scale_y_continuous(n.breaks = 6, limits = c(-5,40))
+
+tot_riba_400_III_p <- ggplot(data = extrapolated_riba_CDS_400_UCSF_III, aes(x=avg_CDS)) +
+  geom_point(aes(y=ES_tAI_slope,colour = "ES")) +
+  geom_line(aes(y=ES_tAI_slope,colour = "ES")) +
+  geom_ribbon(aes(ymin = ES_tAI_CI_low, ymax = ES_tAI_CI_high,fill = "ES"), 
+              alpha = 0.2) +
+  geom_point(aes(y=TE_tAI_slope,colour = "TE")) +
+  geom_line(aes(y=TE_tAI_slope,colour = "TE")) +
+  geom_ribbon(aes(ymin = TE_tAI_CI_low, ymax = TE_tAI_CI_high,fill = "TE"), 
+              alpha = 0.2) +
+  geom_point(aes(y=thalf_tAI_slope,colour = "thalf")) +
+  geom_line(aes(y=thalf_tAI_slope,colour = "thalf")) +
+  geom_ribbon(aes(ymin = thalf_tAI_CI_low, ymax = thalf_tAI_CI_high,fill = "thalf"), 
+              alpha = 0.2) +
+  colour_scale +
+  fill_scale +
+  labs(x = "CDS length (nt)", y = "Control coefficient",
+       title = "Regression based Riba TE UCSF selection III - CDS bins A") +
+  plot_theme
+```
+
+# Figdata S6C
+
+```{r}
+writexl::write_xlsx(extrapolated_riba_CDS_400_UCSF_III,"/Users/samuelmondal/Documents/Translation/Article/Complete submission/Fig Data/Fig S6C.xlsx")
+```
+
+# Correlation plots - different Riba methods
+
+```{r}
+library(ggcorrplot)
+library(corrplot)
+```
+
+```{r}
+corr_extrapolated_riba <- extrapolated_riba %>% 
+  mutate(coller_total_Riba = TE_riba*coller_ratio,
+         coller_total_ES = (coller_total_Riba*CDSLength)/(1000*MeanNumberOfRibosomes)) %>%
+  arrange(CDSLength)
+```
+
+```{r}
+# Depending of Pearson or Spearman, uncomment the correct command
+bullk_cor_val <- cor(corr_extrapolated_riba[c(2,4,13,14,34,36)], method = "spearman")
+#bullk_cor_val <- cor(corr_extrapolated_riba[c(2,4,13,14,34,36)])
+```
+
+```{r}
+# Output deom colnames is [1] "tAI"               "thalf"             "TE_riba"           "TE_riba_RiboZero"  "total_Riba_TE"    [6] "coller_total_Riba"
+colnames(bullk_cor_val) <- rownames(bullk_cor_val) <- c("tAI",
+                                                        "HL",
+                                                        "polyA",
+                                                        "RiboZero",
+                                                        "Regression C.",
+                                                        "Coller C.")
+
+ggcorrplot(bullk_cor_val, lab = TRUE, lab_size = 10) +
+  scale_fill_gradient2(limit = c(0,1), 
+                       low = "blue", 
+                       high =  "red", 
+                       mid = "white", 
+                       midpoint = 0.5,
+                       #name = "Spearman's ρ"
+                       name = "Pearson's R") +
+    theme(legend.position = "right",
+          text=element_text(size=18, hjust = 0.5),
+          legend.title = element_text(size=20, hjust = 0.5, face = "bold",
+                                      margin = margin(1,1,10,1)),
+          legend.text = element_text(size=20, hjust = 0.5),
+          legend.spacing.y = unit(2.0, 'cm'),
+          axis.text.x = element_markdown(size = 20, angle = 0, hjust = 0.5, colour = "black"),
+          axis.text.y = element_markdown(size = 20, hjust = 0.5, colour = "black"),
+          panel.background = element_blank(),
+          panel.grid = element_blank())
+```
+
+# Same Genes in Riba and Unified
+
+```{r}
+cmn_gns <- intersect(Riba$SystematicName,extrapolated_tot_III$SystematicName)
+```
+
+```{r}
+extrapolated_tot_cmn_genes <- extrapolated_tot_III %>%
+  filter(SystematicName %in% cmn_gns) %>%
+  mutate(total_unified_ES = total_unified_ES/median(total_unified_ES),
+         total_unified_TE = total_unified_TE/median(total_unified_TE),
+         thalf = thalf/median(thalf)) %>%
+  group_by(CDS_bins_400) %>%
+  summarise(num_genes = n(),
+            min_CDS = min(CDSLength),
+            max_CDS = max(CDSLength),
+            avg_CDS = mean(CDSLength),
+            {ES_tAI <- ci.theil(alpha = 0.05, total_unified_ES, tAI)
+            tibble(ES_tAI_slope = ES_tAI[1],
+                   ES_tAI_CI_low = ES_tAI[3],
+                   ES_tAI_CI_high = ES_tAI[4])},
+            {TE_tAI <- ci.theil(alpha = 0.05, total_unified_TE, tAI)
+            tibble(TE_tAI_slope = TE_tAI[1],
+                   TE_tAI_CI_low = TE_tAI[3],
+                   TE_tAI_CI_high = TE_tAI[4])},
+            {thalf_tAI <- ci.theil(alpha = 0.05, thalf, tAI)
+            tibble(thalf_tAI_slope = thalf_tAI[1],
+                   thalf_tAI_CI_low = thalf_tAI[3],
+                   thalf_tAI_CI_high = thalf_tAI[4])})
+```
+
+```{r}
+Riba_cmn_genes <- extrapolated_riba_III %>%
+  filter(SystematicName %in% cmn_gns) %>%
+  mutate(TE_riba_RiboZero = TE_riba_RiboZero/median(TE_riba_RiboZero),
+         riba_RiboZero_speed = riba_RiboZero_speed/median(riba_RiboZero_speed),
+         thalf = thalf/median(thalf)) %>%
+  group_by(CDS_bins_400) %>%
+  summarise(min_CDS = min(CDSLength),
+            max_CDS = max(CDSLength),
+            avg_CDS = mean(CDSLength),
+            {ES_tAI <- ci.theil(alpha = 0.05, riba_RiboZero_speed, tAI)
+            tibble(ES_tAI_slope = ES_tAI[1],
+                   ES_tAI_CI_low = ES_tAI[3],
+                   ES_tAI_CI_high = ES_tAI[4])},
+            {TE_tAI <- ci.theil(alpha = 0.05, TE_riba_RiboZero, tAI)
+            tibble(TE_tAI_slope = TE_tAI[1],
+                   TE_tAI_CI_low = TE_tAI[3],
+                   TE_tAI_CI_high = TE_tAI[4])},
+            {thalf_tAI <- ci.theil(alpha = 0.05, thalf, tAI)
+            tibble(thalf_tAI_slope = thalf_tAI[1],
+                   thalf_tAI_CI_low = thalf_tAI[3],
+                   thalf_tAI_CI_high = thalf_tAI[4])})
+```
+
+```{r}
+tot_400_cmn <- ggplot(data = extrapolated_tot_cmn_genes, aes(x=avg_CDS)) +
+  geom_point(aes(y=ES_tAI_slope,colour = "ES")) +
+  geom_line(aes(y=ES_tAI_slope,colour = "ES")) +
+  geom_ribbon(aes(ymin = ES_tAI_CI_low, ymax = ES_tAI_CI_high,fill = "ES"), 
+              alpha = 0.2) +
+  geom_point(aes(y=TE_tAI_slope,colour = "TE")) +
+  geom_line(aes(y=TE_tAI_slope,colour = "TE")) +
+  geom_ribbon(aes(ymin = TE_tAI_CI_low, ymax = TE_tAI_CI_high,fill = "TE"), 
+              alpha = 0.2) +
+  geom_point(aes(y=thalf_tAI_slope,colour = "thalf")) +
+  geom_line(aes(y=thalf_tAI_slope,colour = "thalf")) +
+  geom_ribbon(aes(ymin = thalf_tAI_CI_low, ymax = thalf_tAI_CI_high,fill = "thalf"), 
+              alpha = 0.2) +
+  colour_scale +
+  fill_scale +
+  labs(x = "CDS length (nt)", y = "Control coefficient",
+       title = "Total unified TE (650 genes; gene set common with Riba RiboZero)") +
+  plot_theme
+```
+
+```{r}
+RZ_400_cmn <- ggplot(data = Riba_cmn_genes, aes(x=avg_CDS)) +
+  geom_point(aes(y=ES_tAI_slope,colour = "ES")) +
+  geom_line(aes(y=ES_tAI_slope,colour = "ES")) +
+  geom_ribbon(aes(ymin = ES_tAI_CI_low, ymax = ES_tAI_CI_high,fill = "ES"), 
+              alpha = 0.2) +
+  geom_point(aes(y=TE_tAI_slope,colour = "TE")) +
+  geom_line(aes(y=TE_tAI_slope,colour = "TE")) +
+  geom_ribbon(aes(ymin = TE_tAI_CI_low, ymax = TE_tAI_CI_high,fill = "TE"), 
+              alpha = 0.2) +
+  geom_point(aes(y=thalf_tAI_slope,colour = "thalf")) +
+  geom_line(aes(y=thalf_tAI_slope,colour = "thalf")) +
+  geom_ribbon(aes(ymin = thalf_tAI_CI_low, ymax = thalf_tAI_CI_high,fill = "thalf"), 
+              alpha = 0.2) +
+  colour_scale +
+  fill_scale +
+  labs(x = "CDS length (nt)", y = "Control coefficient",
+       title = "Riba RiboZero TE (650 genes; gene set common with total unified)") +
+  plot_theme
+```
+
+```{r}
+xscl <- scale_x_continuous(n.breaks = 8, limits = c(300,2600))
+yscl <- scale_y_continuous(n.breaks = 6, limits = c(-4,24))
+```
+
+```{r}
+getwd()
+```
+
+```{r}
+table(extrapolated_tot_III %>% filter(SystematicName %in% cmn_gns) %>% .$CDS_bins_400)
+```

@@ -1,0 +1,133 @@
+---
+title: "R Notebook"
+output:
+  html_notebook:
+    theme: united
+    toc: yes
+    code_folding: hide
+---
+
+# Brief summary
+
+Calculation of unified total RNA TE by multiplying the unified TE (which was calculated based on polyA RNAseq data, so, is unified polyA RNA TE) with the ratio of polyA and total Riba RNAseq, based on linear regression with Coller ratio of polyA and total half life (predicted based on linear regression plot.
+
+This is a better estimate of total unified TE than just multiplying it with ratio of coller because it takes into account RNAseq (steady state) data and how it is influenced by decay data (Coller).
+
+[Previous brief summary in Total RNA unified TE incorrectly talked about division with ratio of polyA and total even if the ratio was multiplied there]
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+plot_theme <- theme(legend.position = "right",
+                    legend.title = element_text(size=16,hjust = 0.5),
+                    legend.background = element_rect(colour="black"),
+                    legend.text = element_text(size=16),
+                    axis.text.x = element_text(size = 18, angle = 0),
+                    axis.text.y = element_text(size = 18),
+                    axis.title.x = element_text(size = 18),   
+                    axis.title.y = element_text(size = 18), 
+                    panel.background = element_blank(),
+                    panel.grid = element_blank(),
+                    axis.line = element_line(colour = "black"))
+```
+
+```{r}
+TE <- readxl::read_excel("../Unification_wo_normalisation_TE.xlsx")
+Non_outlier_genes <- readxl::read_excel("../data_files/HL_mes_predVJMADcopy.xlsx", sheet = "Halflife")
+thalf_coller <- readxl::read_excel("../data_files/Coller 2015 HL.xls")
+thalf_coller <- thalf_coller[c(1,3,4)]
+colnames(thalf_coller) <-c("SystematicName","CollerPolyA","CollerTot")
+```
+
+```{r}
+TE <- merge(TE,thalf_coller,all.x = TRUE)
+TE$coller_ratio <- TE$CollerPolyA/TE$CollerTot
+```
+
+```{r}
+riba_supp <- read.table("../data_files/pnas.1817299116.sd01.tsv", header = TRUE, sep='\t')
+riba_ribozero_supp <- read.table("../data_files/pnas.1817299116.sd02.tsv", header = TRUE, sep='\t')
+
+riba_polyAtot_ratio <- merge(riba_supp,
+                             riba_ribozero_supp,
+                             suffixes = c("_polyA","_total"),
+                             by="ensembl_gene_id")
+
+riba_polyAtot_ratio$riba_ratio <- riba_polyAtot_ratio$real_tpm_polyA/riba_polyAtot_ratio$real_tpm_total
+riba_polyAtot_ratio <- riba_polyAtot_ratio %>% rename(SystematicName = ensembl_gene_id)
+```
+
+```{r}
+riba_polyAtot_ratio <- merge(TE,riba_polyAtot_ratio,by = "SystematicName")
+```
+
+```{r}
+Non_outlier_genes <- Non_outlier_genes[!is.na(Non_outlier_genes$NMcoller2015tot),]
+```
+
+```{r}
+TE_filt <- TE[TE$SystematicName %in% Non_outlier_genes$Gene,] %>% drop_na(consensus_TE_geomean)
+```
+
+```{r}
+riba_refined <- riba_polyAtot_ratio[riba_polyAtot_ratio$SystematicName %in% 
+                                      Non_outlier_genes$Gene,]
+```
+
+```{r}
+ggplot(data = riba_refined, aes(x = coller_ratio, y = riba_ratio)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = expression("Presnyak RNA"~t[1/2]~frac(polyA,total)~"ratio"),
+       y = expression("mRNA abundance"~frac(Riba,Riba~RiboZero)~"ratio"),) +
+  plot_theme
+```
+
+```{r}
+riba_model <- lm(riba_ratio ~ coller_ratio, data = riba_refined)
+```
+
+```{r}
+summary(riba_model)
+```
+
+```{r}
+predict(riba_model)
+```
+
+```{r}
+# Coller ratio used for prediction (the 34th column is coller_ratio)
+TE_filt$riba_ratio_estimate <- predict(riba_model, newdata = TE_filt[34])
+```
+
+# Total unified TE
+
+```{r}
+TE_filt$total_unified_TE <- TE_filt$consensus_TE_geomean*TE_filt$riba_ratio_estimate
+```
+
+```{r}
+ggplot(data = TE_filt, aes(x=consensus_TE_geomean,y=total_unified_TE)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  #scale_x_log10() +
+  #scale_y_log10() +
+  labs(x = "Unified TE (polyA)", y = "Unified TE (Total; extrapolation)") +
+  plot_theme
+```
+
+```{r}
+writexl::write_xlsx(TE_filt,"../data_files/Total_unified_TE_extrapolation.xlsx")
+```
+
+```{r}
+ggplot(data = TE_filt) +
+  geom_point(aes(x = consensus_TE_geomean, y = total_unified_TE)) +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = expression(TE[unified]~"("*protein~mRNA^-1*hr^-1*")"),
+       y = expression(TE[extrapolated]~"("*protein~mRNA^-1*hr^-1*")")) +
+  plot_theme
+```
